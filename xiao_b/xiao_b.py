@@ -1,4 +1,4 @@
-"""小B — Discord-driven Claude agent for the auto-trade project.
+"""發財 — Discord-driven Claude agent for the auto-trade project.
 
 Authorised users send Discord messages → bot forwards prompt to a Claude Agent
 SDK session → agent reads/writes files in /workspace/auto-trade, executes bash
@@ -63,7 +63,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("xiao_b")
 
-SYSTEM_PROMPT = f"""你是「小B」,ben 的 auto-trade 專案 AI 助手。
+SYSTEM_PROMPT = f"""你是「發財」,ben 的 auto-trade 專案 AI 助手。
 
 工作目錄:{WORK_DIR}(host 上的 ~/auto-trade,RW)
 記憶目錄:{MEMORY_DIR}(RO;先讀 MEMORY.md 找相關 project_*.md / feedback_*.md)
@@ -206,7 +206,7 @@ async def _alert_owner_if_auth_failed(channel: discord.abc.Messageable) -> None:
         return
     _last_auth_alert = now
     msg = (
-        "🚨 **小B OAuth token 失效**\n"
+        "🚨 **發財 OAuth token 失效**\n"
         f"```\n{err}\n```\n"
         "→ host 跑 `claude setup-token` → 更新 `.env` 的 `CLAUDE_CODE_OAUTH_TOKEN` "
         "→ `docker compose up -d --force-recreate xiao_b`"
@@ -254,7 +254,7 @@ async def run_agent(user_id: int, prompt: str, channel: discord.abc.Messageable)
     if sess.history:
         history_prefix = "## 先前對話\n"
         for turn in sess.history[-10:]:  # cap to last 10 turns
-            who = "ben" if turn["role"] == "user" else "你(小B)"
+            who = "ben" if turn["role"] == "user" else "你(發財)"
             history_prefix += f"\n**{who}**: {turn['content']}\n"
         history_prefix += "\n## 本次訊息\n"
     full_prompt = history_prefix + prompt
@@ -334,7 +334,7 @@ async def on_message(message: discord.Message) -> None:
         return
     if content in ("!help", "/help", "幫助"):
         await message.channel.send(
-            "**小B 指令**\n"
+            "**發財 指令**\n"
             "- 直接打中文或英文 → 我會處理\n"
             "- `!reset` / 清除 → 清空對話記憶(24h 也會自動清)\n"
             "- `!ping` → 確認我活著\n"

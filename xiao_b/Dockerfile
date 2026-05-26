@@ -1,4 +1,4 @@
-# 小B — Discord-driven Claude agent that can modify the auto-trade codebase.
+# 發財 — Discord-driven Claude agent that can modify the auto-trade codebase.
 # Bigger image (Node + Python + claude CLI) than the main auto-trade service —
 # kept in a separate service to avoid bloating the trading image.
 

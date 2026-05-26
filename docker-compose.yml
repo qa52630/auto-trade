@@ -67,7 +67,7 @@ services:
       - ./.env:/app/.env:ro
       - ./B122998538.pfx:/app/B122998538.pfx:ro
 
-  # 小B — Discord-driven Claude agent that can read/edit/rebuild this repo.
+  # 發財 — Discord-driven Claude agent that can read/edit/rebuild this repo.
   # Full-auto mode: any whitelisted user can make code changes that affect live trading.
   xiao_b:
     build: ./xiao_b
