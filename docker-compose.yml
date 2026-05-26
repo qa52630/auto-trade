@@ -87,8 +87,12 @@ services:
       - /Users/ben/.claude/projects/-Users-ben-auto-trade/memory:/workspace/memory:ro
       # Claude CLI credentials. R/W because token refresh writes back.
       - /Users/ben/.claude:/root/.claude
-      # Top-level config file (separate from the .claude dir).
-      - /Users/ben/.claude.json:/root/.claude.json
+      # NOTE: /root/.claude.json deliberately NOT bind-mounted from host.
+      # Docker single-file bind mount + Claude CLI's atomic unlink+recreate
+      # write pattern corrupts the file on every turn (host gets a new inode,
+      # container still points at the orphaned old inode → "Unexpected EOF").
+      # The CLI keeps its own copy inside the container; auth comes from the
+      # CLAUDE_CODE_OAUTH_TOKEN env var, so losing this file on restart is fine.
       # Docker socket to drive `docker compose build / restart` from inside.
       - /var/run/docker.sock:/var/run/docker.sock
       # Git identity / global config so commits authored as host user.
