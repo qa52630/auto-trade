@@ -1,0 +1,144 @@
+# Auto-trade stack
+#
+# Services:
+#   dashboard      — Flask web on :5050, always running
+#   live_paper     — Intraday simulator; runs 09:00–13:30, self-exits, ofelia restarts at 08:55
+#   l2_logger      — Order book + tick logger to data/l2/{date}/*.jsonl
+#   scheduler      — ofelia daemon that triggers EOD batch jobs (fetch_blacklist, paper_trade, l2_features)
+#
+# Volumes:
+#   ./data, ./artifacts, ./logs            — persistent state, mounted RW
+#   ./.env, ./*.pfx, ./stocks.json         — credentials & config, mounted RO
+#
+# Usage:
+#   docker compose build
+#   docker compose up -d
+#   docker compose logs -f live_paper
+#   docker compose down
+
+services:
+
+  dashboard:
+    build: .
+    image: auto-trade:latest
+    platform: linux/amd64
+    container_name: at_dashboard
+    restart: unless-stopped
+    command: ["python3", "dashboard.py"]
+    ports:
+      - "5050:5050"
+    volumes:
+      - ./data:/app/data
+      - ./artifacts:/app/artifacts
+      - ./logs:/app/logs
+      - ./stocks.json:/app/stocks.json
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5050/api/universe"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  live_paper:
+    image: auto-trade:latest
+    platform: linux/amd64
+    container_name: at_live_paper
+    depends_on:
+      - dashboard
+    # Restart only on crash. Clean exit at 13:30 → ofelia will relaunch next 08:55.
+    restart: on-failure
+    command: ["python3", "live_paper_realtime.py"]
+    volumes:
+      - ./data:/app/data
+      - ./artifacts:/app/artifacts
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro
+      - ./B122998538.pfx:/app/B122998538.pfx:ro
+      - ./stocks.json:/app/stocks.json
+
+  l2_logger:
+    image: auto-trade:latest
+    platform: linux/amd64
+    container_name: at_l2_logger
+    restart: unless-stopped
+    command: ["python3", "l2_logger.py"]
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro
+      - ./B122998538.pfx:/app/B122998538.pfx:ro
+
+  # 小B — Discord-driven Claude agent that can read/edit/rebuild this repo.
+  # Full-auto mode: any whitelisted user can make code changes that affect live trading.
+  xiao_b:
+    build: ./xiao_b
+    image: xiao-b:latest
+    container_name: at_xiao_b
+    restart: unless-stopped
+    env_file: ./.env
+    environment:
+      - XIAO_B_WORKDIR=/workspace/auto-trade
+      - XIAO_B_MEMORY_DIR=/workspace/memory
+      # Claude CLI refuses --dangerously-skip-permissions as root unless this is set.
+      - IS_SANDBOX=1
+    volumes:
+      # Full repo R/W so agent can edit source + commit + rebuild.
+      - .:/workspace/auto-trade
+      # Memory dir (Claude Code's auto-memory) read-only for context.
+      - /Users/ben/.claude/projects/-Users-ben-auto-trade/memory:/workspace/memory:ro
+      # Claude CLI credentials. R/W because token refresh writes back.
+      - /Users/ben/.claude:/root/.claude
+      # Top-level config file (separate from the .claude dir).
+      - /Users/ben/.claude.json:/root/.claude.json
+      # Docker socket to drive `docker compose build / restart` from inside.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Git identity / global config so commits authored as host user.
+      - /Users/ben/.gitconfig:/root/.gitconfig:ro
+
+  # ofelia: docker-native cron. Runs commands inside other containers on schedule.
+  scheduler:
+    image: mcuadros/ofelia:latest
+    container_name: at_scheduler
+    restart: unless-stopped
+    depends_on:
+      - dashboard
+    command: daemon --docker
+    environment:
+      # CRITICAL: ofelia base image is UTC by default → cron times would fire 8h late.
+      - TZ=Asia/Taipei
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /usr/share/zoneinfo/Asia/Taipei:/etc/localtime:ro
+    # All schedules consolidated here. Ofelia spawns one-off containers via
+    # docker-run. Volumes use absolute host paths (required by ofelia).
+    labels:
+      ofelia.enabled: "true"
+
+      # 14:05 — L2 features EOD
+      ofelia.job-run.l2_features.schedule: "0 5 14 * * 1-5"
+      ofelia.job-run.l2_features.image: "auto-trade:latest"
+      ofelia.job-run.l2_features.command: "python3 /app/l2_features.py"
+      ofelia.job-run.l2_features.volume: "/Users/ben/auto-trade/data:/app/data,/Users/ben/auto-trade/logs:/app/logs"
+
+      # 14:20 — Append settled TAIEX daily row (for next day's regime gate)
+      ofelia.job-run.fetch_taiex.schedule: "0 20 14 * * 1-5"
+      ofelia.job-run.fetch_taiex.image: "auto-trade:latest"
+      ofelia.job-run.fetch_taiex.command: "python3 /app/fetch_taiex.py --daily-only --days 10"
+      ofelia.job-run.fetch_taiex.volume: "/Users/ben/auto-trade/data:/app/data,/Users/ben/auto-trade/logs:/app/logs,/Users/ben/auto-trade/.env:/app/.env:ro,/Users/ben/auto-trade/B122998538.pfx:/app/B122998538.pfx:ro"
+
+      # 14:25 — Fetch blacklist for next trading day
+      ofelia.job-run.fetch_blacklist.schedule: "0 25 14 * * 1-5"
+      ofelia.job-run.fetch_blacklist.image: "auto-trade:latest"
+      ofelia.job-run.fetch_blacklist.command: "python3 /app/fetch_blacklist.py"
+      ofelia.job-run.fetch_blacklist.volume: "/Users/ben/auto-trade/data:/app/data,/Users/ben/auto-trade/logs:/app/logs,/Users/ben/auto-trade/.env:/app/.env:ro,/Users/ben/auto-trade/B122998538.pfx:/app/B122998538.pfx:ro"
+
+      # 14:30 — Paper trade EOD replay
+      ofelia.job-run.paper_trade.schedule: "0 30 14 * * 1-5"
+      ofelia.job-run.paper_trade.image: "auto-trade:latest"
+      ofelia.job-run.paper_trade.command: "python3 /app/paper_trade.py"
+      ofelia.job-run.paper_trade.volume: "/Users/ben/auto-trade/data:/app/data,/Users/ben/auto-trade/artifacts:/app/artifacts,/Users/ben/auto-trade/logs:/app/logs,/Users/ben/auto-trade/stocks.json:/app/stocks.json"
+
+      # 14:35 — Compare with stock-python (mounts read-only access to its live_results)
+      ofelia.job-run.compare_sp.schedule: "0 35 14 * * 1-5"
+      ofelia.job-run.compare_sp.image: "auto-trade:latest"
+      ofelia.job-run.compare_sp.command: "python3 /app/compare_with_stockpython.py"
+      ofelia.job-run.compare_sp.volume: "/Users/ben/auto-trade/data:/app/data,/Users/ben/auto-trade/logs:/app/logs,/Users/ben/stock-python/live_results:/Users/ben/stock-python/live_results:ro"

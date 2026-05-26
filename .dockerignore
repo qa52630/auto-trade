@@ -1,0 +1,12 @@
+# Skip large data + caches when building image (mounted at runtime instead)
+data/
+artifacts/
+logs/
+__pycache__/
+*.pyc
+.git/
+.env
+*.pfx
+# Mac-only wheel (Docker is linux)
+taishin_sdk-*-macosx*.whl
+.DS_Store

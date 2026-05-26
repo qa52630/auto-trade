@@ -1,0 +1,30 @@
+# Secrets
+.env
+.env.local
+*.pfx
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+
+# Data (regenerable, large)
+data/
+artifacts/
+artifacts_pre_taiex_backup/
+
+# Runtime logs
+log/
+logs/
+*.log
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
