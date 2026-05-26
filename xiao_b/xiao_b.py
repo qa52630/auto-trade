@@ -29,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import discord
+import claude_agent_sdk
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
@@ -49,6 +50,11 @@ WORK_DIR = os.environ.get("XIAO_B_WORKDIR", "/workspace/auto-trade")
 MEMORY_DIR = os.environ.get("XIAO_B_MEMORY_DIR", "/workspace/memory")
 SESSION_TTL = timedelta(hours=24)
 DISCORD_CHUNK = 1900   # Discord limit is 2000; leave room for code fences
+
+# Bundled Claude CLI binary (used for out-of-band auth probes).
+CLAUDE_CLI_PATH = Path(claude_agent_sdk.__file__).parent / "_bundled" / "claude"
+AUTH_ALERT_COOLDOWN = timedelta(minutes=15)
+_last_auth_alert: datetime | None = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -156,6 +162,70 @@ async def send_chunks(channel: discord.abc.Messageable, text: str) -> None:
         text = text[split_at:].lstrip("\n")
 
 
+async def _probe_auth() -> str | None:
+    """Run a 'claude -p ok' probe. Return offending text if auth failed, else None.
+
+    Auth failures surface from the SDK as a generic ProcessError or a misleading
+    "error result: success" — the actual "401 Invalid authentication credentials"
+    lives in the CLI's stderr. This probe re-runs the CLI directly so we can read
+    that stderr and reliably distinguish auth failures from transient errors.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            str(CLAUDE_CLI_PATH), "-p", "ok",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return None
+    except FileNotFoundError:
+        log.warning("auth probe: bundled CLI not found at %s", CLAUDE_CLI_PATH)
+        return None
+    except Exception as e:
+        log.warning("auth probe failed to spawn: %s", e)
+        return None
+
+    text = (stdout + stderr).decode("utf-8", errors="ignore")
+    markers = ("401", "Invalid authentication", "Failed to authenticate", "Unauthorized")
+    if any(m in text for m in markers):
+        return text.strip()[:500]
+    return None
+
+
+async def _alert_owner_if_auth_failed(channel: discord.abc.Messageable) -> None:
+    """Cooldown-gated: probe auth; DM owners if it really is a 401."""
+    global _last_auth_alert
+    now = datetime.now(timezone.utc)
+    if _last_auth_alert and (now - _last_auth_alert) < AUTH_ALERT_COOLDOWN:
+        return
+    err = await _probe_auth()
+    if not err:
+        return
+    _last_auth_alert = now
+    msg = (
+        "🚨 **小B OAuth token 失效**\n"
+        f"```\n{err}\n```\n"
+        "→ host 跑 `claude setup-token` → 更新 `.env` 的 `CLAUDE_CODE_OAUTH_TOKEN` "
+        "→ `docker compose up -d --force-recreate xiao_b`"
+    )
+    delivered = False
+    for uid in ALLOWED_USER_IDS:
+        try:
+            user = await client.fetch_user(uid)
+            await user.send(msg)
+            delivered = True
+        except Exception as e:
+            log.warning("failed to DM %s: %s", uid, e)
+    if not delivered:
+        try:
+            await channel.send(msg)
+        except Exception:
+            pass
+
+
 def format_tool_use(block: ToolUseBlock) -> str | None:
     """One-line summary of a tool call, for live progress updates."""
     name = block.name
@@ -215,6 +285,7 @@ async def run_agent(user_id: int, prompt: str, channel: discord.abc.Messageable)
     except Exception as e:
         log.exception("agent error")
         await channel.send(f"❌ Agent 錯誤: `{type(e).__name__}: {e}`")
+        asyncio.create_task(_alert_owner_if_auth_failed(channel))
         return
 
     # Append assistant turn to session history (text only).
